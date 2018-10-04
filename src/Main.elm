@@ -3,8 +3,12 @@ module Main exposing (..)
 import Browser exposing (element)
 import Dict exposing (Dict)
 import Html exposing (Html, div, text)
-import Http
-import Json.Decode as Decode
+import Http exposing (Header, header)
+import Json.Decode as Decode exposing (Decoder, Value, at, decodeValue, errorToString, fail, field, int, list, null, oneOf, string, value)
+import RemoteData exposing (RemoteData(..), WebData)
+import RemoteData.Http exposing (Config, getWithConfig)
+import Element exposing (el, layout, table, Element, fill)
+import String exposing (toUpper)
 
 
 -- Msg
@@ -12,21 +16,11 @@ import Json.Decode as Decode
 
 type Msg
     = NoOp
+    | HandleRecordsResponse (WebData KeywordCollection)
 
 
 
 -- Model
-
-
-type Cache a b
-    = Empty
-    | EmptyInvalid a
-    | EmptySyncing
-    | EmptyInvalidSyncing a
-    | Filled b
-    | FilledSyncing b
-    | FilledInvalid a b
-    | FilledInvalidSyncing a b
 
 
 type alias Keyword =
@@ -36,14 +30,6 @@ type alias Keyword =
     , competition : Int
     , month : Month
     }
-
-
-type alias KeywordCache =
-    Cache Http.Error Keyword
-
-
-type alias KeywordCollection =
-    Dict String KeywordCache
 
 
 type Month
@@ -59,190 +45,271 @@ type Month
     | Jun
     | Jul
     | Aug
+    | None
 
 
 type alias Model =
-    { keywords : Cache Http.Error KeywordCollection
+    { keywords : WebData KeywordCollection
     }
 
 
-type alias Transitions a b c =
-    { updateEmpty : a -> b
-    , updateFilled : a -> b -> b
-    , patchFilled : c -> b -> b
-    }
+type alias KeywordCollection =
+    List Keyword
 
 
-type CacheEvent a b c
-    = Sync
-    | Error a
-    | Update b
-    | Patch c
+initialModel : Value -> ( Model, Cmd Msg )
+initialModel flag =
+    let
+        decodedToken =
+            case decodeValue string flag of
+                Ok token ->
+                    token
 
-
-type Visibility a
-    = Show a
-    | Hide
-
-
-initialModel : flags -> ( Model, Cmd Msg )
-initialModel _ =
-    ( { keywords = Empty }, Cmd.none )
+                Err err ->
+                    errorToString err
+    in
+    ( { keywords = Loading }, getRecords decodedToken )
 
 
 
 -- View
+renderMonth : Month -> Element msg
+renderMonth m =
+    case m of
+    Sept ->
+        Element.text "September"
 
+    Oct ->
+        Element.text "October"
 
-view : model -> Html Msg
-view model =
-    div [] []
+    Nov ->
+        Element.text "November"
 
+    Dec ->
+        Element.text "December"
 
-errorVisibility : Cache Http.Error a -> Visibility Http.Error
-errorVisibility cache =
-    case cache of
-        Empty ->
-            Hide
+    Jan ->
+        Element.text "January"
 
-        EmptyInvalid error ->
-            Show error
+    Feb ->
+        Element.text "February"
 
-        EmptyInvalidSyncing error ->
-            Show error
+    Mar ->
+        Element.text "March"
 
-        EmptySyncing ->
-            Hide
+    Apr ->
+        Element.text "April"
 
-        Filled _ ->
-            Hide
+    May ->
+        Element.text "May"
 
-        FilledInvalid error _ ->
-            Show error
+    Jun ->
+        Element.text "Jun"
 
-        FilledInvalidSyncing error _ ->
-            Show error
+    Jul ->
+        Element.text "July"
 
-        FilledSyncing _ ->
-            Hide
+    Aug ->
+        Element.text "August"
 
+    None ->
+        Element.text "None"
+    
+renderRange : List Int  -> Element msg
+renderRange range =
+    let
+        s  a =
+            a |> String.fromInt
+    in
+    case range of
+        head :: tail ->
+            el [] ( Element.text (s head ++ ".." ++ (
+                case (tail |> List.reverse) of
+                    innerHead :: innerTail ->
+                        s innerHead
 
-visibilityToHtml : Html Msg -> Visibility a -> Html b
-visibilityToHtml toHtml visibility =
-    case visibility of
-        Show x ->
-            toHtml x
-
-        Hide ->
-            text ""
-
-
-errorView : Cache Http.Error a -> Html Msg
-errorView =
-    errorVisibility >> visibilityToHtml errorHtml
-
-
-errorHtml : Html Msg
-errorHtml =
-    div [] []
-
-
-
--- Update
--- updateKeywordEmpty : a -> b
--- updateKeywordEmpty a =
---     []
--- patchKeywordFilled : a -> b -> b
--- patchKeywordFilled el stuff =
---     stuff
--- updateKeywordFilled : a -> b -> b
--- updateKeywordFilled el stuff =
---     stuff
-
-
-patchFilled : String -> CacheEvent Http.Error Keyword a -> KeywordCollection -> KeywordCollection
-patchFilled key cacheEvent keywordCollection =
-    Dict.get key keywordCollection
-        |> Maybe.map
-            (updateCache
-                {}
-             -- { updateEmpty = updateKeywordEmpty
-             -- , updateFilled = updateKeywordFilled
-             -- , patchFilled = patchKeywordFilled
-             -- }
+                    _ ->
+                        ""
+                    )
+                )
             )
-        |> Maybe.map (\innerUpdate -> Dict.insert key innerUpdate keywordCollection)
-        |> Maybe.withDefault keywordCollection
+
+        _ ->
+            Element.none
 
 
-updateCache : Transitions a b c -> CacheEvent a b c -> Cache a b -> Cache a b
-updateCache transitions event current =
-    case current of
-        Empty ->
-            case event of
-                Sync ->
-                    EmptySyncing
+view : Model -> Html Msg
+view model =
+    case model.keywords of
+        Success data ->
+            layout []
+            <| table []
+                { data = data
+                , columns = 
+                    [ 
+                        { header = Element.text "Keyword"
+                        , width = fill
+                        , view = \e -> Element.text e.name 
+                        }
+                        , 
+                        { header = Element.text "Searches"
+                        , width = fill
+                        , view = \e -> (e.searches |> renderRange )
+                        }
+                        , 
+                        { header = Element.text "Engagement"
+                        , width = fill
+                        , view = \e -> (e.engagement |> renderRange )
+                        }
+                        ,
+                        { header = Element.text "Competition"
+                        , width = fill
+                        , view = \e -> Element.text (e.competition |> String.fromInt)
+                        }
+                        ,
+                        { header = Element.text "Month"
+                        , width = fill
+                        , view = \e -> renderMonth e.month 
+                        }
 
-                Error nextError ->
-                    EmptyInvalid nextError
+                    ]
 
-                Update nextData ->
-                    Filled <| transitions.updateEmpty nextData
+                }
 
-                Patch patch ->
-                    Filled <| transitions.patchFilled patch
+            
+        Loading ->
+            layout []
+            Element.none
 
-        EmptyInvalid currentError ->
-            case event of
-                Sync ->
-                    EmptySyncing
+        NotAsked ->
+            layout []
+            Element.none
 
-                Error nextError ->
-                    EmptyInvalid nextError
+        Failure _ ->
+            layout []
+            Element.none
 
-                Update nextData ->
-                    Filled nextData
+
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        HandleRecordsResponse d ->
+            ( { model | keywords = d }, Cmd.none )
+                |> Debug.log "model"
+
         NoOp ->
-            ( model, getRecords )
+            ( model, Cmd.none )
 
 
-getRecords : Http.Request Model
-getRecords =
-    Http.get "" decodeRecords
+airTableConfig : String -> Config
+airTableConfig token =
+    let
+        updatedTokenHeader =
+            tokenHeader token
+    in
+    { headers = [ updatedTokenHeader ]
+    , withCredentials = False
+    , timeout = Nothing
+    }
 
 
-decodeRecords : Decode.Decoder (List Keyword)
+tokenHeader : String -> Header
+tokenHeader token =
+    header "Authorization" ("Bearer " ++ token)
+
+
+getRecords : String -> Cmd Msg
+getRecords token =
+    getWithConfig (airTableConfig token) "https://api.airtable.com/v0/appJDieY6AzAbRCSk/Table%201" HandleRecordsResponse decodeRecords
+
+
+decodeRecords : Decode.Decoder KeywordCollection
 decodeRecords =
-    Decode.list decodeKeyword
+    field "records" (list decodeKeyword)
 
 
 
--- { name : String
--- , searches : List Int
--- , engagement : List Int
--- , competition : Int
--- , month : Month
--- }
+-- |> decodeKeyword
 
 
 decodeKeyword : Decode.Decoder Keyword
 decodeKeyword =
-    Decode.map4 Keyword
-        (field "name" string)
-        (field "searches" toRange)
-        (field "engagement" string)
-        (field "month" string)
+    oneOf
+        [
+        field "fields"
+            (Decode.map5
+                Keyword
+                (field "Keyword" string)
+                (field "Searches" toRange)
+                (field "Engagement" toRange)
+                (field "Competition" toInt)
+                (field "Month Of Most Engagement" toMonth)
+            )
+        , field "fields"  (value |> Decode.map (\e -> Keyword "" [] [] 0 None))
+        ]
 
 
-toRange : Decoder Keyword
+toInt : Decoder Int
+toInt =
+    string
+        |> Decode.map convertToInt
+
+
+toRange : Decoder (List Int)
 toRange =
-    field "searches" string
+    string
         |> Decode.map convertToRange
+
+
+toMonth : Decoder Month
+toMonth =
+    string
+        |> Decode.map convertToMonth
+
+
+convertToMonth : String -> Month
+convertToMonth month =
+    case month of
+        "Sept" ->
+            Sept
+
+        "Oct" ->
+            Oct
+
+        "Nov" ->
+            Nov
+
+        "Dec" ->
+            Dec
+
+        "Jan" ->
+            Jan
+
+        "Feb" ->
+            Feb
+
+        "Mar" ->
+            Mar
+
+        "Apr" ->
+            Apr
+
+        "May" ->
+            May
+
+        "Jun" ->
+            Jun
+
+        "Jul" ->
+            Jul
+
+        "Aug" ->
+            Aug
+
+        _ ->
+            None
 
 
 convertToRange : String -> List Int
@@ -259,13 +326,23 @@ convertToRange search =
             splitString
                 |> List.map
                     (\r ->
-                        case toInt r of
-                            Success n ->
+                        case String.toInt r of
+                            Just n ->
                                 n
 
-                            Err _ ->
-                                [ 0 ]
+                            Nothing ->
+                                0
                     )
+
+
+convertToInt : String -> Int
+convertToInt string =
+    case String.toInt string of
+        Just s ->
+            s
+
+        Nothing ->
+            0
 
 
 
@@ -281,7 +358,7 @@ subscriptions model =
 -- Main
 
 
-main : Program flags Model Msg
+main : Program Value Model Msg
 main =
     Browser.element
         { init = initialModel
